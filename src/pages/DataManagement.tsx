@@ -242,6 +242,7 @@ const DataManagement = () => {
             <div className="flex items-center gap-3">
               {isEditMode ? (
                 <div className="flex gap-2">
+                  {/* Insert Button with Dropdown */}
                   <div className="relative">
                     <Button
                       variant="outline"
@@ -279,18 +280,22 @@ const DataManagement = () => {
                     )}
                   </div>
                   
+                  {/* Update Button */}
                   <Button
-                    variant="outline"
+                    variant="warning"
                     size="sm"
-                    onClick={() => {
-                      setIsEditMode(false);
-                      setShowInsertOptions(false);
-                    }}
-                    className="bg-card"
+                    onClick={handleUpdate}
+                    disabled={isSaving}
                   >
-                    <X className="h-4 w-4" />
-                    Cancel
+                    {isSaving ? (
+                      <Loader2 className="h-4 w-4 animate-spin" />
+                    ) : (
+                      <Edit3 className="h-4 w-4" />
+                    )}
+                    {isSaving ? "Updating..." : "Update"}
                   </Button>
+
+                  {/* Save Changes Button */}
                   <Button
                     variant="success"
                     size="sm"
@@ -302,7 +307,21 @@ const DataManagement = () => {
                     ) : (
                       <Save className="h-4 w-4" />
                     )}
-                    {isSaving ? "Updating..." : "Update"}
+                    Save Changes
+                  </Button>
+                  
+                  {/* Cancel Button */}
+                  <Button
+                    variant="outline"
+                    size="sm"
+                    onClick={() => {
+                      setIsEditMode(false);
+                      setShowInsertOptions(false);
+                    }}
+                    className="bg-card"
+                  >
+                    <X className="h-4 w-4" />
+                    Cancel
                   </Button>
                 </div>
               ) : (
