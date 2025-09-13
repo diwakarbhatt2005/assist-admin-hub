@@ -6,6 +6,7 @@ import { BrowserRouter, Routes, Route } from "react-router-dom";
 import DatabaseSelection from "./pages/DatabaseSelection";
 import DataManagement from "./pages/DataManagement";
 import NotFound from "./pages/NotFound";
+// import ThemeSwitcher from "./components/ThemeSwitcher";
 
 const queryClient = new QueryClient();
 
@@ -14,6 +15,7 @@ const App = () => (
     <TooltipProvider>
       <Toaster />
       <Sonner />
+      {/* ThemeSwitcher removed as requested */}
       <BrowserRouter>
         <Routes>
           <Route path="/" element={<DatabaseSelection />} />

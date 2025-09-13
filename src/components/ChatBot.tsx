@@ -1,9 +1,12 @@
 import { useState } from "react";
+import ThemeSwitcher from "./ThemeSwitcher";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { X, Send, Bot, User, Loader2 } from "lucide-react";
 import { cn } from "@/lib/utils";
+import { fetchChatbotResponse } from "@/api-integrations/chatbotApi";
 
+// Defines the structure for a single chat message
 interface Message {
   id: string;
   text: string;
@@ -11,14 +14,16 @@ interface Message {
   timestamp: Date;
 }
 
+// Defines the properties (props) the ChatBot component expects
 interface ChatBotProps {
   isOpen: boolean;
   onClose: () => void;
   databaseName: string;
-  data: any[];
+  data: any[]; // Data from the database that the chatbot might use
 }
 
 export const ChatBot = ({ isOpen, onClose, databaseName, data }: ChatBotProps) => {
+  // State to hold all the chat messages
   const [messages, setMessages] = useState<Message[]>([
     {
       id: "1",
@@ -27,46 +32,18 @@ export const ChatBot = ({ isOpen, onClose, databaseName, data }: ChatBotProps) =
       timestamp: new Date(),
     },
   ]);
+
+  // State for the text input field
   const [inputValue, setInputValue] = useState("");
+  // State to show a "typing..." indicator
   const [isTyping, setIsTyping] = useState(false);
 
-  const generateResponse = (query: string): string => {
-    const lowerQuery = query.toLowerCase();
-    
-    // Sample responses based on query content
-    if (lowerQuery.includes("count") || lowerQuery.includes("how many")) {
-      return `There are currently ${data.length} records in the ${databaseName} database.`;
-    }
-    
-    if (lowerQuery.includes("column") || lowerQuery.includes("field")) {
-      const columns = data.length > 0 ? Object.keys(data[0]) : [];
-      return `The ${databaseName} database has ${columns.length} columns: ${columns.join(", ")}.`;
-    }
-    
-    if (lowerQuery.includes("summary") || lowerQuery.includes("overview")) {
-      const columns = data.length > 0 ? Object.keys(data[0]) : [];
-      return `Database Summary for ${databaseName}:\n• Total records: ${data.length}\n• Columns: ${columns.length}\n• Primary key: ${columns[0] || "Not specified"}\n• Data types: Mixed (strings, numbers, dates)`;
-    }
-    
-    if (lowerQuery.includes("export") || lowerQuery.includes("download")) {
-      return "You can export data using the table's built-in features. In edit mode, you can also import CSV files to add new records.";
-    }
-    
-    if (lowerQuery.includes("edit") || lowerQuery.includes("modify")) {
-      return "To edit the data, click the 'Edit Data' button in the top toolbar. This will allow you to modify cells directly, paste data from spreadsheets, or import CSV files.";
-    }
-    
-    if (lowerQuery.includes("help") || lowerQuery.includes("what can you do")) {
-      return "I can help you with:\n• Database statistics and summaries\n• Column information\n• Data editing guidance\n• Export/import instructions\n• General database questions\n\nFeel free to ask me anything about your data!";
-    }
-    
-    // Default response
-    return `I understand you're asking about "${query}". Based on the current ${databaseName} database with ${data.length} records, I'd be happy to help! Could you be more specific about what information you'd like to know?`;
-  };
-
+  // Function to handle sending a message
   const handleSend = async () => {
+    // Don't send if the input is empty
     if (!inputValue.trim()) return;
 
+    // Create a new message object for the user's message
     const userMessage: Message = {
       id: Date.now().toString(),
       text: inputValue,
@@ -74,37 +51,44 @@ export const ChatBot = ({ isOpen, onClose, databaseName, data }: ChatBotProps) =
       timestamp: new Date(),
     };
 
+    // Add the user's message to the chat and clear the input
     setMessages(prev => [...prev, userMessage]);
     setInputValue("");
-    setIsTyping(true);
+    setIsTyping(true); // Show the "AI is thinking..." indicator
 
-    // Simulate API call delay
-    await new Promise(resolve => setTimeout(resolve, 1000 + Math.random() * 1000));
+    // Call the external API to get the chatbot's response
+    const answer = await fetchChatbotResponse(inputValue);
 
+    // Create a new message object for the bot's response
     const botResponse: Message = {
       id: (Date.now() + 1).toString(),
-      text: generateResponse(inputValue),
+      text: answer,
       isUser: false,
       timestamp: new Date(),
     };
 
+    // Add the bot's response to the chat
     setMessages(prev => [...prev, botResponse]);
-    setIsTyping(false);
+    setIsTyping(false); // Hide the "AI is thinking..." indicator
   };
 
+  // Function to allow sending message with the "Enter" key
   const handleKeyPress = (e: React.KeyboardEvent) => {
     if (e.key === "Enter" && !e.shiftKey) {
-      e.preventDefault();
+      e.preventDefault(); // Prevent adding a new line
       handleSend();
     }
   };
 
+  // If the chat window is not supposed to be open, don't render anything
   if (!isOpen) return null;
 
+  // Render the chat window UI
   return (
     <div className="fixed inset-0 z-50 bg-background/80 backdrop-blur-sm">
       <div className="fixed right-6 bottom-6 top-6 w-96 max-w-[calc(100vw-3rem)]">
         <div className="h-full bg-card border border-border rounded-xl shadow-elegant flex flex-col overflow-hidden">
+          
           {/* Header */}
           <div className="flex items-center justify-between p-4 border-b border-border bg-gradient-subtle">
             <div className="flex items-center gap-3">
@@ -116,12 +100,15 @@ export const ChatBot = ({ isOpen, onClose, databaseName, data }: ChatBotProps) =
                 <p className="text-xs text-muted-foreground">{databaseName} Database</p>
               </div>
             </div>
-            <Button variant="ghost" size="icon" onClick={onClose} className="h-8 w-8">
-              <X className="h-4 w-4" />
-            </Button>
+            <div className="flex items-center gap-2">
+              <ThemeSwitcher />
+              <Button variant="ghost" size="icon" onClick={onClose} className="h-8 w-8">
+                <X className="h-4 w-4" />
+              </Button>
+            </div>
           </div>
 
-          {/* Messages */}
+          {/* Messages Area */}
           <div className="flex-1 overflow-y-auto p-4 space-y-4">
             {messages.map((message) => (
               <div
@@ -153,7 +140,7 @@ export const ChatBot = ({ isOpen, onClose, databaseName, data }: ChatBotProps) =
                 )}
               </div>
             ))}
-            
+            {/* "AI is thinking..." indicator */}
             {isTyping && (
               <div className="flex gap-3 animate-slide-up">
                 <div className="h-6 w-6 bg-gradient-primary rounded-full flex items-center justify-center flex-shrink-0 mt-1">
@@ -167,7 +154,7 @@ export const ChatBot = ({ isOpen, onClose, databaseName, data }: ChatBotProps) =
             )}
           </div>
 
-          {/* Input */}
+          {/* Input Field */}
           <div className="p-4 border-t border-border bg-gradient-subtle">
             <div className="flex gap-2">
               <Input

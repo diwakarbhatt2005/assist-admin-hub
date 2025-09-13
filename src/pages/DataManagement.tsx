@@ -1,4 +1,4 @@
-import { useState, useEffect } from "react";
+import { useState, useEffect, useRef } from "react";
 import { useLocation, useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -7,21 +7,62 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { MessageCircle, Edit3, Save, Upload, ArrowLeft, Loader2, CheckCircle, X, Plus, Calendar } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { ChatBot } from "@/components/ChatBot";
+import {insertApi} from "@/api-integrations/insertApi";
+import {updateTableDataApi} from "@/api-integrations/updateTableDataApi";
+
+// Call commissions API after insert/update and show toast if it fails
+async function callCommissionsApi(tableName: string, operation: string, affectedRows: any[], toastFn?: any) {
+  if (!affectedRows || affectedRows.length === 0) return;
+  try {
+    const res = await fetch('https://mentify.srv880406.hstgr.cloud/api/calculate-commissions', {
+      method: 'POST',
+      headers: {
+        'accept': 'application/json',
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        table_name: tableName,
+        operation,
+        affected_rows: affectedRows,
+      }),
+    });
+    const data = await res.json();
+    if (!res.ok || !data.success) {
+      if (toastFn) toastFn({
+        title: 'Commissions Error',
+        description: data?.detail || 'Failed to calculate commissions',
+        variant: 'destructive',
+      });
+    }
+  } catch (err) {
+    if (toastFn) toastFn({
+      title: 'Commissions Error',
+      description: err instanceof Error ? err.message : 'Failed to calculate commissions',
+      variant: 'destructive',
+    });
+  }
+}
 
 const DataManagement = () => {
   const location = useLocation();
   const navigate = useNavigate();
   const { toast } = useToast();
   const [isEditMode, setIsEditMode] = useState(false);
+  const [isUpdateMode, setIsUpdateMode] = useState(false); // true when Update is clicked
+  // Row-level edit state: index of row being edited, or null
+  const [editRowIndex, setEditRowIndex] = useState<number | null>(null);
   const [isSaving, setSaving] = useState(false);
   const [showInsertOptions, setShowInsertOptions] = useState(false);
   const [data, setData] = useState<any[]>([]);
-  const [databaseName, setDatabaseName] = useState<string>("");
+  const [tableName, setTableName] = useState<string>("");
   const [columns, setColumns] = useState<string[]>([]);
   const [primaryKey, setPrimaryKey] = useState<string>("");
   const [isChatOpen, setIsChatOpen] = useState(false);
   const [selectedMonth, setSelectedMonth] = useState<string>("");
   const [selectedYear, setSelectedYear] = useState<string>("");
+
+  // Keep a ref of the original data to detect new rows
+  const originalDataRef = useRef<any[]>([]);
   const [isCalculating, setIsCalculating] = useState(false);
 
   useEffect(() => {
@@ -30,10 +71,10 @@ const DataManagement = () => {
       return;
     }
 
-    const { data: receivedData, databaseName: dbName } = location.state;
-    setData(receivedData);
-    setDatabaseName(dbName);
-    
+    const { data: receivedData, databaseName: tblName } = location.state;
+  setData(receivedData);
+  originalDataRef.current = receivedData;
+    setTableName(tblName);
     if (receivedData.length > 0) {
       const cols = Object.keys(receivedData[0]);
       setColumns(cols);
@@ -43,35 +84,112 @@ const DataManagement = () => {
 
   const handleEdit = () => {
     setIsEditMode(true);
+    setIsUpdateMode(false);
     setShowInsertOptions(false);
     toast({
       title: "Edit Mode Activated",
-      description: "You can now modify existing data or insert new rows.",
+      description: "You can now manage data. Use Insert or Update.",
+    });
+  };
+
+  const handleUpdateMode = () => {
+    setIsUpdateMode(true);
+    toast({
+      title: "Update Mode Enabled",
+      description: "Primary key is locked. You can edit other fields.",
     });
   };
 
   const handleUpdate = async () => {
     setSaving(true);
     try {
-      // Simulate API call
-      await new Promise((resolve) => setTimeout(resolve, 2000));
-      
-      // Simulate potential failure (5% chance)
-      if (Math.random() < 0.05) {
-        throw new Error("Failed to update data in database");
-      }
+      // Find new rows (not present in originalDataRef)
+      const orig = originalDataRef.current;
+      const origPKs = new Set(orig.map(row => row[primaryKey]));
+      let newRows = data.filter(row => !origPKs.has(row[primaryKey]));
+      // Clean new rows: remove PK if blank/null/undefined so backend can auto-generate
+      newRows = newRows.map(row => {
+        const cleanRow = { ...row };
+        if (
+          cleanRow[primaryKey] === undefined ||
+          cleanRow[primaryKey] === null ||
+          cleanRow[primaryKey] === ''
+        ) {
+          delete cleanRow[primaryKey];
+        }
+        // Remove empty/null/undefined fields
+        Object.keys(cleanRow).forEach(key => {
+          if (cleanRow[key] === null || cleanRow[key] === undefined || cleanRow[key] === '') {
+            delete cleanRow[key];
+          }
+        });
+        return cleanRow;
+      });
 
+      // Find updated rows (present in originalDataRef, but changed)
+      let updatedRows = data.filter(row => origPKs.has(row[primaryKey]));
+      // Only send updates for rows that have changed
+      updatedRows = updatedRows.filter(row => {
+        const origRow = orig.find(r => r[primaryKey] === row[primaryKey]);
+        if (!origRow) return false;
+        // Compare non-PK fields
+        return columns.some(col => col !== primaryKey && row[col] !== origRow[col]);
+      });
+      // Prepare updates: each must include PK and changed fields only
+      let updates = updatedRows.map(row => {
+        const updateObj = { [primaryKey]: row[primaryKey] };
+        columns.forEach(col => {
+          if (col !== primaryKey && row[col] !== undefined && row[col] !== null && row[col] !== "") {
+            updateObj[col] = row[col];
+          }
+        });
+        return updateObj;
+      });
+      // Filter out updates with missing/blank PK
+      const invalidUpdates = updates.filter(u => !u[primaryKey]);
+      updates = updates.filter(u => u[primaryKey]);
+      if (invalidUpdates.length > 0) {
+        toast({
+          title: "Update Error",
+          description: `Skipped ${invalidUpdates.length} row(s) with missing primary key.`,
+          variant: "destructive",
+        });
+      }
+      if (newRows.length > 0) {
+        await insertApi(tableName, newRows, primaryKey);
+        toast({
+          title: "Rows Inserted",
+          description: `${newRows.length} new row(s) inserted successfully!`,
+          variant: "default",
+        });
+        // Call commissions API after insert
+        await callCommissionsApi(tableName, 'insert', newRows, toast);
+      }
+      if (updates.length > 0) {
+        await updateTableDataApi(tableName, primaryKey, updates);
+        toast({
+          title: "Rows Updated",
+          description: `${updates.length} row(s) updated successfully!`,
+          variant: "default",
+        });
+        // Call commissions API after update
+        await callCommissionsApi(tableName, 'update', updates, toast);
+      }
+      if (newRows.length === 0 && updates.length === 0) {
+        toast({
+          title: "No Changes",
+          description: "No new or updated rows to save.",
+        });
+      }
       setIsEditMode(false);
       setShowInsertOptions(false);
-      toast({
-        title: "Data Updated",
-        description: "All changes have been successfully saved to the database.",
-        variant: "default",
-      });
+      setIsUpdateMode(false);
+      // Update originalDataRef to include new data
+      originalDataRef.current = [...data];
     } catch (error) {
       toast({
-        title: "Update Failed",
-        description: error instanceof Error ? error.message : "Failed to update data",
+        title: "Save Failed",
+        description: error instanceof Error ? error.message : "Failed to save data",
         variant: "destructive",
       });
     } finally {
@@ -84,20 +202,24 @@ const DataManagement = () => {
   };
 
   const handleAddRow = () => {
+    // Only add a new row if not immediately followed by a paste event
+    // Use a flag to skip adding a blank row if a paste is about to happen
+    if ((window as any)._skipNextAddRow) {
+      (window as any)._skipNextAddRow = false;
+      setShowInsertOptions(false);
+      setIsUpdateMode(true);
+      return;
+    }
     const newRow: any = {};
     columns.forEach((col) => {
-      if (col === primaryKey) {
-        newRow[col] = Math.max(...data.map(row => parseInt(row[col]) || 0)) + 1;
-      } else {
-        newRow[col] = "";
-      }
+      newRow[col] = "";
     });
-    
-    setData([...data, newRow]);
+    setData([newRow, ...data]);
     setShowInsertOptions(false);
+    setIsUpdateMode(true);
     toast({
       title: "New Row Added",
-      description: "A new empty row has been added to the table.",
+      description: "A new empty row has been added to the top of the table.",
     });
   };
 
@@ -107,31 +229,99 @@ const DataManagement = () => {
     setData(newData);
   };
 
+  // Save changes for a single row
+  const handleSaveRow = async (rowIndex: number) => {
+    setSaving(true);
+    try {
+      // Simulate API call for single row update
+      await new Promise((resolve) => setTimeout(resolve, 1000));
+      setEditRowIndex(null);
+      toast({
+        title: "Row Updated",
+        description: `Row ${rowIndex + 1} updated successfully!`,
+        variant: "default",
+      });
+    } catch (error) {
+      toast({
+        title: "Update Failed",
+        description: error instanceof Error ? error.message : "Failed to update row",
+        variant: "destructive",
+      });
+    } finally {
+      setSaving(false);
+    }
+  };
+
   const handlePaste = (e: React.ClipboardEvent, rowIndex: number, colIndex: number) => {
+    // If pasting at the top and the first row is blank, remove it (for add row + paste flow)
+    let workingData = data;
+    if (rowIndex === 0 && data.length > 0 && columns.every(col => !data[0][col])) {
+      workingData = data.slice(1);
+      (window as any)._skipNextAddRow = true;
+    }
     e.preventDefault();
     const pasteData = e.clipboardData.getData("text");
-    const rows = pasteData.split("\n").filter(row => row.trim());
-    const newData = [...data];
+    // Split and filter out only truly empty lines (not lines with tabs)
+    const rows = pasteData.split("\n").filter(row => row.replace(/\t/g, '').trim() !== '');
+    if (rows.length === 0) return;
 
+    // If more than one row, insert new rows at the top
+    if (rows.length > 1) {
+      // Always leave PK blank for new rows, start filling from first non-PK column
+      const newRows = rows.map((row) => {
+        const cells = row.split("\t");
+        const newRow: any = {};
+        let cellIdx = 0;
+        columns.forEach((col) => {
+          if (col === primaryKey) {
+            newRow[col] = "";
+          } else {
+            newRow[col] = cells[cellIdx]?.trim() || "";
+            cellIdx++;
+          }
+        });
+        // Only add row if at least one cell is non-empty (excluding PK)
+        const hasAnyData = columns.some(col => col !== primaryKey && newRow[col] && newRow[col].trim() !== "");
+        return hasAnyData ? newRow : null;
+      }).filter(Boolean);
+      let finalData = [...newRows, ...workingData];
+      // After paste, if first row is blank and more than one row, remove it
+      if (finalData.length > 1 && columns.every(col => !finalData[0][col])) {
+        finalData = finalData.slice(1);
+      }
+      if (newRows.length > 0) {
+        setData(finalData);
+        toast({
+          title: "Bulk Data Pasted",
+          description: `Added ${newRows.length} new rows from paste`,
+        });
+      }
+      return;
+    }
+
+    // Single row paste: update existing row/columns, but always leave PK blank for new rows
+    const newData = [...data];
     rows.forEach((row, rIdx) => {
       const cells = row.split("\t");
-      cells.forEach((cell, cIdx) => {
-        const targetRowIndex = rowIndex + rIdx;
-        const targetColIndex = colIndex + cIdx;
-        
-        if (targetRowIndex < newData.length && targetColIndex < columns.length) {
-          const column = columns[targetColIndex];
-          if (column !== primaryKey) { // Don't allow editing primary key
-            newData[targetRowIndex] = { ...newData[targetRowIndex], [column]: cell.trim() };
+      const targetRowIndex = rowIndex + rIdx;
+      if (targetRowIndex < newData.length) {
+        const rowObj = { ...newData[targetRowIndex] };
+        let cellIdx = 0;
+        columns.forEach((col) => {
+          if (col === primaryKey && (!newData[targetRowIndex][primaryKey] || newData[targetRowIndex][primaryKey] === "")) {
+            rowObj[col] = "";
+          } else if (col !== primaryKey && cellIdx < cells.length) {
+            rowObj[col] = cells[cellIdx]?.trim() || "";
+            cellIdx++;
           }
-        }
-      });
+        });
+        newData[targetRowIndex] = rowObj;
+      }
     });
-
     setData(newData);
     toast({
       title: "Data Pasted",
-      description: `Pasted ${rows.length} rows of data`,
+      description: `Pasted ${rows.length} row(s) of data`,
     });
   };
 
@@ -146,19 +336,22 @@ const DataManagement = () => {
         reader.onload = (event) => {
           const csv = event.target?.result as string;
           const rows = csv.split("\n").filter(row => row.trim());
+          if (rows.length < 2) return;
+          const csvHeaders = rows[0].split(",").map(h => h.trim());
           const newRows = rows.slice(1).map((row, index) => {
             const cells = row.split(",");
             const newRow: any = {};
-            columns.forEach((col, colIndex) => {
+            columns.forEach((col) => {
               if (col === primaryKey) {
                 newRow[col] = Math.max(...data.map(r => parseInt(r[col]) || 0)) + index + 1;
               } else {
-                newRow[col] = cells[colIndex]?.trim() || "";
+                // Find the index of this column in the CSV header
+                const csvIdx = csvHeaders.findIndex(h => h.toLowerCase() === col.toLowerCase());
+                newRow[col] = csvIdx !== -1 ? (cells[csvIdx]?.trim() || "") : "";
               }
             });
             return newRow;
           });
-          
           setData([...data, ...newRows]);
           setShowInsertOptions(false);
           toast({
@@ -197,184 +390,216 @@ const DataManagement = () => {
         description: "Failed to complete month-end calculation. Please try again.",
         variant: "destructive",
       });
-    } finally {
-      setIsCalculating(false);
     }
+    setIsCalculating(false);
   };
 
-  if (!data.length) {
-    return (
-      <div className="min-h-screen bg-background flex items-center justify-center">
-        <div className="text-center">
-          <Loader2 className="h-8 w-8 animate-spin mx-auto mb-4 text-primary" />
-          <p className="text-muted-foreground">Loading data...</p>
-        </div>
-      </div>
-    );
-  }
+  // Removed leftover Month-End Calculation section code
 
+  // (No JSX here)
   return (
     <div className="min-h-screen bg-background">
-      {/* Header */}
-      <div className="border-b border-border bg-gradient-subtle">
-        <div className="container mx-auto px-6 py-4">
-          <div className="flex items-center justify-between">
-            <div className="flex items-center gap-4">
-              <Button
-                variant="ghost"
-                size="sm"
-                onClick={() => navigate("/")}
-                className="text-muted-foreground hover:text-foreground"
-              >
-                <ArrowLeft className="h-4 w-4" />
-                Back
-              </Button>
-              <div>
-                <h1 className="text-2xl font-bold text-foreground">
-                  {databaseName.replace(/_/g, " ")}
-                </h1>
-                <p className="text-sm text-muted-foreground">
-                  {data.length} records • {columns.length} columns
-                </p>
-              </div>
-            </div>
+      {/* Heading and Back Button */}
+      <div className="w-full flex items-center justify-between px-6 pt-6 pb-2">
+        <div className="flex items-center gap-3">
+          <Button variant="ghost" size="icon" onClick={() => navigate(-1)}>
+            <ArrowLeft className="h-5 w-5" />
+          </Button>
+          <h1 className="text-2xl font-bold tracking-tight text-foreground">{tableName || "Table"}</h1>
+        </div>
+      </div>
 
-            <div className="flex items-center gap-3">
-              {isEditMode ? (
-                <div className="flex gap-2">
-                  {/* Insert Button with Dropdown */}
-                  <div className="relative">
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      onClick={handleInsertClick}
-                      className="bg-card"
-                    >
-                      <Plus className="h-4 w-4" />
-                      Insert
-                    </Button>
-                    
-                    {showInsertOptions && (
-                      <div className="absolute top-full left-0 mt-2 w-48 bg-popover border border-border rounded-lg shadow-elegant z-10 animate-slide-up">
-                        <div className="p-2 space-y-1">
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={handleAddRow}
-                            className="w-full justify-start text-sm"
-                          >
-                            <Plus className="h-4 w-4 mr-2" />
-                            Add New Row
-                          </Button>
-                          <Button
-                            variant="ghost"
-                            size="sm"
-                            onClick={handleCSVImport}
-                            className="w-full justify-start text-sm"
-                          >
-                            <Upload className="h-4 w-4 mr-2" />
-                            Import CSV
-                          </Button>
-                        </div>
-                      </div>
-                    )}
-                  </div>
-                  
-                  {/* Update Button */}
-                  <Button
-                    variant="warning"
-                    size="sm"
-                    onClick={handleUpdate}
-                    disabled={isSaving}
-                  >
-                    {isSaving ? (
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                    ) : (
-                      <Edit3 className="h-4 w-4" />
-                    )}
-                    {isSaving ? "Updating..." : "Update"}
-                  </Button>
-
-                  {/* Save Changes Button */}
-                  <Button
-                    variant="success"
-                    size="sm"
-                    onClick={handleUpdate}
-                    disabled={isSaving}
-                  >
-                    {isSaving ? (
-                      <Loader2 className="h-4 w-4 animate-spin" />
-                    ) : (
-                      <Save className="h-4 w-4" />
-                    )}
-                    Save Changes
-                  </Button>
-                  
-                  {/* Cancel Button */}
-                  <Button
-                    variant="outline"
-                    size="sm"
-                    onClick={() => {
-                      setIsEditMode(false);
-                      setShowInsertOptions(false);
-                    }}
-                    className="bg-card"
-                  >
-                    <X className="h-4 w-4" />
-                    Cancel
-                  </Button>
-                </div>
-              ) : (
-                <Button variant="hero" size="sm" onClick={handleEdit}>
-                  <Edit3 className="h-4 w-4" />
-                  Edit Data
+      {/* Action Bar: Insert, Update, Cancel, Save, Edit, Upload CSV, Month-End */}
+      <div className="w-full px-6">
+        <div className="flex flex-wrap gap-2 items-center bg-card border border-border rounded-xl shadow-elegant p-4 mb-4">
+          {isEditMode ? (
+            <>
+              {/* Insert Dropdown */}
+              <div className="relative">
+                <Button
+                  variant="outline"
+                  size="sm"
+                  onClick={handleInsertClick}
+                  className="bg-card"
+                >
+                  <Plus className="h-4 w-4" /> Insert
                 </Button>
-              )}
+                {showInsertOptions && (
+                  <div className="absolute top-full left-0 mt-2 w-48 bg-popover border border-border rounded-lg shadow-elegant z-10 animate-slide-up">
+                    <div className="p-2 space-y-1">
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={handleAddRow}
+                        className="w-full justify-start text-sm"
+                      >
+                        <Plus className="h-4 w-4 mr-2" /> Add New Row
+                      </Button>
+                      <Button
+                        variant="ghost"
+                        size="sm"
+                        onClick={handleCSVImport}
+                        className="w-full justify-start text-sm"
+                      >
+                        <Upload className="h-4 w-4 mr-2" /> Upload CSV
+                      </Button>
+                    </div>
+                  </div>
+                )}
+              </div>
+              {/* Update Button */}
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={handleUpdateMode}
+                disabled={isUpdateMode}
+              >
+                <span style={{fontSize:'1.2em',marginRight:4}}>🔄</span>Update
+              </Button>
+              {/* Cancel Button */}
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => {
+                  setIsEditMode(false);
+                  setIsUpdateMode(false);
+                  setShowInsertOptions(false);
+                }}
+                className="bg-card"
+              >
+                <X className="h-4 w-4" /> Cancel
+              </Button>
+              {/* Save Changes Button: only enabled in update mode */}
+              <Button
+                variant="success"
+                size="sm"
+                onClick={handleUpdate}
+                disabled={!isUpdateMode || isSaving}
+              >
+                {isSaving ? (
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                ) : (
+                  <Save className="h-4 w-4" />
+                )}
+                Save Changes
+              </Button>
+            </>
+          ) : (
+            <Button variant="hero" size="sm" onClick={handleEdit}>
+              <Edit3 className="h-4 w-4" /> Edit Data
+            </Button>
+          )}
+
+          {/* Month-End Calculation Section (compact) */}
+          <div className="flex items-center gap-2 ml-auto">
+            <label className="text-sm font-medium">Month:</label>
+            <Select value={selectedMonth} onValueChange={setSelectedMonth}>
+              <SelectTrigger className="w-24">
+                <SelectValue placeholder="Month" />
+              </SelectTrigger>
+              <SelectContent>
+                {["January","February","March","April","May","June","July","August","September","October","November","December"].map((m) => (
+                  <SelectItem key={m} value={m}>{m}</SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+            <label className="text-sm font-medium">Year:</label>
+            <div className="bg-zinc-900 rounded flex items-center px-2 h-8">
+              <Select
+                value={selectedYear}
+                onValueChange={setSelectedYear}
+              >
+                <SelectTrigger className="w-24 h-7 bg-zinc-900 text-white border-none focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm shadow-none">
+                  <SelectValue placeholder="Year" />
+                </SelectTrigger>
+                <SelectContent className="bg-zinc-900 text-white">
+                  {Array.from({ length: 2025 - 2000 + 1 }, (_, i) => {
+                    const year = (2025 - i).toString();
+                    return (
+                      <SelectItem key={year} value={year} className="text-sm">
+                        {year}
+                      </SelectItem>
+                    );
+                  })}
+                </SelectContent>
+              </Select>
             </div>
+            <Button
+              variant="default"
+              size="sm"
+              onClick={handleMonthEndCalculation}
+              disabled={isCalculating || !selectedMonth || !selectedYear}
+            >
+              {isCalculating ? <Loader2 className="h-4 w-4 animate-spin mr-2" /> : <Calendar className="h-4 w-4 mr-2" />}
+              Month-End
+            </Button>
           </div>
         </div>
       </div>
 
       {/* Data Table */}
-      <div className="container mx-auto px-6 py-6">
+      <div className="w-full px-6 pb-4">
         <div className="bg-card border border-border rounded-xl shadow-elegant overflow-hidden">
-          <div className="overflow-x-auto max-h-[600px]">
-            <Table>
-              <TableHeader className="sticky top-0 bg-muted/50 backdrop-blur-sm">
-                <TableRow>
+          <div className="overflow-x-auto max-h-[900px]">
+            <table
+              className="w-full text-sm max-w-full border-collapse"
+              style={{ fontSize: '13px', tableLayout: 'auto' }}
+            >
+              <thead className="sticky top-0 bg-muted/50 backdrop-blur-sm">
+                <tr>
                   {columns.map((column) => (
-                    <TableHead key={column} className="font-semibold text-foreground">
+                    <th
+                      key={column}
+                      className="font-semibold text-foreground border border-border px-3 py-2 text-left whitespace-nowrap"
+                      style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}
+                    >
                       {column}
                       {column === primaryKey && (
                         <span className="ml-2 text-xs text-primary font-normal">(PK)</span>
                       )}
-                    </TableHead>
+                    </th>
                   ))}
-                </TableRow>
-              </TableHeader>
-              <TableBody>
+                </tr>
+              </thead>
+              <tbody>
                 {data.map((row, rowIndex) => (
-                  <TableRow key={rowIndex} className="hover:bg-muted/30">
+                  <tr key={rowIndex} className="hover:bg-muted/30">
                     {columns.map((column, colIndex) => (
-                      <TableCell key={column} className="p-2">
-                        {isEditMode && column !== primaryKey ? (
-                          <Input
-                            value={row[column] || ""}
-                            onChange={(e) => handleCellChange(rowIndex, column, e.target.value)}
-                            onPaste={(e) => handlePaste(e, rowIndex, colIndex)}
-                            className="border-none bg-transparent h-8 p-1 focus-visible:ring-1 focus-visible:ring-primary"
-                          />
+                      <td
+                        key={column}
+                        className="border border-border px-3 py-2 text-left whitespace-nowrap"
+                        style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 180 }}
+                      >
+                        {isEditMode && isUpdateMode ? (
+                          column === primaryKey ? (
+                            <Input
+                              value={row[column] || ""}
+                              disabled
+                              className="border-none bg-transparent h-8 p-1 text-primary font-medium text-sm opacity-70"
+                              style={{ fontSize: '13px', minWidth: 0 }}
+                            />
+                          ) : (
+                            <Input
+                              value={row[column] || ""}
+                              onChange={(e) => handleCellChange(rowIndex, column, e.target.value)}
+                              onPaste={(e) => handlePaste(e, rowIndex, colIndex)}
+                              className="border-none bg-transparent h-8 p-1 focus-visible:ring-1 focus-visible:ring-primary text-sm"
+                              style={{ fontSize: '13px', minWidth: 0 }}
+                            />
+                          )
                         ) : (
                           <span className={column === primaryKey ? "font-medium text-primary" : ""}>
-                            {row[column]}
+                            {String(row[column])?.length > 40
+                              ? String(row[column]).slice(0, 37) + '...'
+                              : String(row[column])}
                           </span>
                         )}
-                      </TableCell>
+                      </td>
                     ))}
-                  </TableRow>
+                  </tr>
                 ))}
-              </TableBody>
-            </Table>
+              </tbody>
+            </table>
           </div>
         </div>
 
@@ -389,76 +614,6 @@ const DataManagement = () => {
             </div>
           </div>
         )}
-
-        {/* Month-End Calculation Section */}
-        <div className="mt-8 bg-card border border-border rounded-xl p-6 shadow-elegant">
-          <div className="flex items-center gap-3 mb-6">
-            <div className="h-10 w-10 bg-gradient-primary rounded-lg flex items-center justify-center">
-              <Calendar className="h-5 w-5 text-primary-foreground" />
-            </div>
-            <div>
-              <h2 className="text-xl font-semibold text-foreground">Month-End Calculation</h2>
-              <p className="text-sm text-muted-foreground">Run financial calculations for specific months</p>
-            </div>
-          </div>
-
-          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
-            <div className="space-y-2">
-              <label className="text-sm font-medium text-foreground">Month</label>
-              <Select value={selectedMonth} onValueChange={setSelectedMonth}>
-                <SelectTrigger className="bg-background border-border">
-                  <SelectValue placeholder="Select month..." />
-                </SelectTrigger>
-                <SelectContent className="bg-popover border-border">
-                  {[
-                    "January", "February", "March", "April", "May", "June",
-                    "July", "August", "September", "October", "November", "December"
-                  ].map((month) => (
-                    <SelectItem key={month} value={month} className="focus:bg-accent">
-                      {month}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-
-            <div className="space-y-2">
-              <label className="text-sm font-medium text-foreground">Year</label>
-              <Select value={selectedYear} onValueChange={setSelectedYear}>
-                <SelectTrigger className="bg-background border-border">
-                  <SelectValue placeholder="Select year..." />
-                </SelectTrigger>
-                <SelectContent className="bg-popover border-border">
-                  {Array.from({ length: 5 }, (_, i) => new Date().getFullYear() - 2 + i).map((year) => (
-                    <SelectItem key={year} value={year.toString()} className="focus:bg-accent">
-                      {year}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </div>
-
-            <Button
-              onClick={handleMonthEndCalculation}
-              disabled={isCalculating || !selectedMonth || !selectedYear}
-              variant="hero"
-              size="lg"
-              className="h-12"
-            >
-              {isCalculating ? (
-                <>
-                  <Loader2 className="h-4 w-4 animate-spin" />
-                  Calculating...
-                </>
-              ) : (
-                <>
-                  <Calendar className="h-4 w-4" />
-                  Calculate Month-End
-                </>
-              )}
-            </Button>
-          </div>
-        </div>
       </div>
 
       {/* AI Chatbot */}
@@ -476,7 +631,7 @@ const DataManagement = () => {
       <ChatBot 
         isOpen={isChatOpen} 
         onClose={() => setIsChatOpen(false)} 
-        databaseName={databaseName}
+        databaseName={tableName}
         data={data}
       />
     </div>
