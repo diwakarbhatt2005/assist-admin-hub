@@ -3,7 +3,8 @@ import { useLocation, useNavigate } from "react-router-dom";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { MessageCircle, Edit3, Save, Upload, ArrowLeft, Loader2, CheckCircle, X } from "lucide-react";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { MessageCircle, Edit3, Save, Upload, ArrowLeft, Loader2, CheckCircle, X, Plus, Calendar } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { ChatBot } from "@/components/ChatBot";
 
@@ -13,11 +14,15 @@ const DataManagement = () => {
   const { toast } = useToast();
   const [isEditMode, setIsEditMode] = useState(false);
   const [isSaving, setSaving] = useState(false);
+  const [showInsertOptions, setShowInsertOptions] = useState(false);
   const [data, setData] = useState<any[]>([]);
   const [databaseName, setDatabaseName] = useState<string>("");
   const [columns, setColumns] = useState<string[]>([]);
   const [primaryKey, setPrimaryKey] = useState<string>("");
   const [isChatOpen, setIsChatOpen] = useState(false);
+  const [selectedMonth, setSelectedMonth] = useState<string>("");
+  const [selectedYear, setSelectedYear] = useState<string>("");
+  const [isCalculating, setIsCalculating] = useState(false);
 
   useEffect(() => {
     if (!location.state?.data) {
@@ -38,13 +43,14 @@ const DataManagement = () => {
 
   const handleEdit = () => {
     setIsEditMode(true);
+    setShowInsertOptions(false);
     toast({
       title: "Edit Mode Activated",
-      description: "You can now modify the data. Primary key column is protected.",
+      description: "You can now modify existing data or insert new rows.",
     });
   };
 
-  const handleSave = async () => {
+  const handleUpdate = async () => {
     setSaving(true);
     try {
       // Simulate API call
@@ -52,24 +58,47 @@ const DataManagement = () => {
       
       // Simulate potential failure (5% chance)
       if (Math.random() < 0.05) {
-        throw new Error("Failed to save changes to database");
+        throw new Error("Failed to update data in database");
       }
 
       setIsEditMode(false);
+      setShowInsertOptions(false);
       toast({
-        title: "Changes Saved",
-        description: "All data has been successfully updated in the database.",
+        title: "Data Updated",
+        description: "All changes have been successfully saved to the database.",
         variant: "default",
       });
     } catch (error) {
       toast({
-        title: "Save Failed",
-        description: error instanceof Error ? error.message : "Failed to save changes",
+        title: "Update Failed",
+        description: error instanceof Error ? error.message : "Failed to update data",
         variant: "destructive",
       });
     } finally {
       setSaving(false);
     }
+  };
+
+  const handleInsertClick = () => {
+    setShowInsertOptions(!showInsertOptions);
+  };
+
+  const handleAddRow = () => {
+    const newRow: any = {};
+    columns.forEach((col) => {
+      if (col === primaryKey) {
+        newRow[col] = Math.max(...data.map(row => parseInt(row[col]) || 0)) + 1;
+      } else {
+        newRow[col] = "";
+      }
+    });
+    
+    setData([...data, newRow]);
+    setShowInsertOptions(false);
+    toast({
+      title: "New Row Added",
+      description: "A new empty row has been added to the table.",
+    });
   };
 
   const handleCellChange = (rowIndex: number, column: string, value: string) => {
@@ -122,7 +151,7 @@ const DataManagement = () => {
             const newRow: any = {};
             columns.forEach((col, colIndex) => {
               if (col === primaryKey) {
-                newRow[col] = data.length + index + 1; // Generate new ID
+                newRow[col] = Math.max(...data.map(r => parseInt(r[col]) || 0)) + index + 1;
               } else {
                 newRow[col] = cells[colIndex]?.trim() || "";
               }
@@ -131,6 +160,7 @@ const DataManagement = () => {
           });
           
           setData([...data, ...newRows]);
+          setShowInsertOptions(false);
           toast({
             title: "CSV Imported",
             description: `Added ${newRows.length} new rows from CSV`,
@@ -140,6 +170,36 @@ const DataManagement = () => {
       }
     };
     input.click();
+  };
+
+  const handleMonthEndCalculation = async () => {
+    if (!selectedMonth || !selectedYear) {
+      toast({
+        title: "Missing Information",
+        description: "Please select both month and year for calculation.",
+        variant: "destructive",
+      });
+      return;
+    }
+
+    setIsCalculating(true);
+    try {
+      // Simulate month-end calculation API call
+      await new Promise((resolve) => setTimeout(resolve, 3000));
+      
+      toast({
+        title: "Calculation Complete",
+        description: `Month-end calculation for ${selectedMonth} ${selectedYear} has been completed successfully.`,
+      });
+    } catch (error) {
+      toast({
+        title: "Calculation Failed",
+        description: "Failed to complete month-end calculation. Please try again.",
+        variant: "destructive",
+      });
+    } finally {
+      setIsCalculating(false);
+    }
   };
 
   if (!data.length) {
@@ -180,24 +240,52 @@ const DataManagement = () => {
             </div>
 
             <div className="flex items-center gap-3">
-              {isEditMode && (
-                <Button
-                  variant="outline"
-                  size="sm"
-                  onClick={handleCSVImport}
-                  className="bg-card"
-                >
-                  <Upload className="h-4 w-4" />
-                  Import CSV
-                </Button>
-              )}
-              
               {isEditMode ? (
                 <div className="flex gap-2">
+                  <div className="relative">
+                    <Button
+                      variant="outline"
+                      size="sm"
+                      onClick={handleInsertClick}
+                      className="bg-card"
+                    >
+                      <Plus className="h-4 w-4" />
+                      Insert
+                    </Button>
+                    
+                    {showInsertOptions && (
+                      <div className="absolute top-full left-0 mt-2 w-48 bg-popover border border-border rounded-lg shadow-elegant z-10 animate-slide-up">
+                        <div className="p-2 space-y-1">
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={handleAddRow}
+                            className="w-full justify-start text-sm"
+                          >
+                            <Plus className="h-4 w-4 mr-2" />
+                            Add New Row
+                          </Button>
+                          <Button
+                            variant="ghost"
+                            size="sm"
+                            onClick={handleCSVImport}
+                            className="w-full justify-start text-sm"
+                          >
+                            <Upload className="h-4 w-4 mr-2" />
+                            Import CSV
+                          </Button>
+                        </div>
+                      </div>
+                    )}
+                  </div>
+                  
                   <Button
                     variant="outline"
                     size="sm"
-                    onClick={() => setIsEditMode(false)}
+                    onClick={() => {
+                      setIsEditMode(false);
+                      setShowInsertOptions(false);
+                    }}
                     className="bg-card"
                   >
                     <X className="h-4 w-4" />
@@ -206,7 +294,7 @@ const DataManagement = () => {
                   <Button
                     variant="success"
                     size="sm"
-                    onClick={handleSave}
+                    onClick={handleUpdate}
                     disabled={isSaving}
                   >
                     {isSaving ? (
@@ -214,7 +302,7 @@ const DataManagement = () => {
                     ) : (
                       <Save className="h-4 w-4" />
                     )}
-                    {isSaving ? "Saving..." : "Save Changes"}
+                    {isSaving ? "Updating..." : "Update"}
                   </Button>
                 </div>
               ) : (
@@ -276,12 +364,82 @@ const DataManagement = () => {
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
               <CheckCircle className="h-4 w-4 text-success" />
               <span>
-                Edit mode active. You can copy data from spreadsheets and paste it into cells. 
+                Edit mode active. You can modify existing data, add new rows, or import CSV files. 
                 Primary key column ({primaryKey}) is protected from editing.
               </span>
             </div>
           </div>
         )}
+
+        {/* Month-End Calculation Section */}
+        <div className="mt-8 bg-card border border-border rounded-xl p-6 shadow-elegant">
+          <div className="flex items-center gap-3 mb-6">
+            <div className="h-10 w-10 bg-gradient-primary rounded-lg flex items-center justify-center">
+              <Calendar className="h-5 w-5 text-primary-foreground" />
+            </div>
+            <div>
+              <h2 className="text-xl font-semibold text-foreground">Month-End Calculation</h2>
+              <p className="text-sm text-muted-foreground">Run financial calculations for specific months</p>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-4 items-end">
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-foreground">Month</label>
+              <Select value={selectedMonth} onValueChange={setSelectedMonth}>
+                <SelectTrigger className="bg-background border-border">
+                  <SelectValue placeholder="Select month..." />
+                </SelectTrigger>
+                <SelectContent className="bg-popover border-border">
+                  {[
+                    "January", "February", "March", "April", "May", "June",
+                    "July", "August", "September", "October", "November", "December"
+                  ].map((month) => (
+                    <SelectItem key={month} value={month} className="focus:bg-accent">
+                      {month}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <div className="space-y-2">
+              <label className="text-sm font-medium text-foreground">Year</label>
+              <Select value={selectedYear} onValueChange={setSelectedYear}>
+                <SelectTrigger className="bg-background border-border">
+                  <SelectValue placeholder="Select year..." />
+                </SelectTrigger>
+                <SelectContent className="bg-popover border-border">
+                  {Array.from({ length: 5 }, (_, i) => new Date().getFullYear() - 2 + i).map((year) => (
+                    <SelectItem key={year} value={year.toString()} className="focus:bg-accent">
+                      {year}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+
+            <Button
+              onClick={handleMonthEndCalculation}
+              disabled={isCalculating || !selectedMonth || !selectedYear}
+              variant="hero"
+              size="lg"
+              className="h-12"
+            >
+              {isCalculating ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" />
+                  Calculating...
+                </>
+              ) : (
+                <>
+                  <Calendar className="h-4 w-4" />
+                  Calculate Month-End
+                </>
+              )}
+            </Button>
+          </div>
+        </div>
       </div>
 
       {/* AI Chatbot */}
