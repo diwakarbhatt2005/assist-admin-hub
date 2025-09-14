@@ -81,6 +81,7 @@ const DataManagement = () => {
   };
 
   const handleDownloadMonthReport = async () => {
+    toast({ title: "Download Clicked", description: "Trying to download Monthend Report..." });
     if (!selectedMonth || !selectedYear) {
       toast({
         title: "Select Month & Year",
@@ -93,14 +94,17 @@ const DataManagement = () => {
     const monthNum = ("0" + (new Date(Date.parse(selectedMonth + " 1, 2000")).getMonth() + 1)).slice(-2);
     const reportMonth = `${selectedYear}-${monthNum}`;
     try {
+      console.log('Calling downloadFullMonthReport', reportMonth);
       await downloadFullMonthReport(reportMonth, true);
       toast({ title: "Report Downloaded", description: `PDF report for ${selectedMonth} ${selectedYear} downloaded.` });
     } catch (err) {
       toast({ title: "Download Failed", description: err instanceof Error ? err.message : "Failed to download report", variant: "destructive" });
+      console.error('Download Monthend Report error:', err);
     }
     setShowDownloadOptions(false);
   };
   const handleDownloadShortReport = async () => {
+    toast({ title: "Download Clicked", description: "Trying to download Monthly Short Report..." });
     if (!selectedMonth || !selectedYear) {
       toast({
         title: "Select Month & Year",
@@ -113,10 +117,12 @@ const DataManagement = () => {
     const monthNum = ("0" + (new Date(Date.parse(selectedMonth + " 1, 2000")).getMonth() + 1)).slice(-2);
     const reportMonth = `${selectedYear}-${monthNum}`;
     try {
+      console.log('Calling downloadShortMonthReport', reportMonth);
       await downloadShortMonthReport(reportMonth);
       toast({ title: "Short Report Downloaded", description: `PDF short report for ${selectedMonth} ${selectedYear} downloaded.` });
     } catch (err) {
       toast({ title: "Download Failed", description: err instanceof Error ? err.message : "Failed to download short report", variant: "destructive" });
+      console.error('Download Monthly Short Report error:', err);
     }
     setShowDownloadOptions(false);
   };
@@ -584,7 +590,7 @@ const DataManagement = () => {
                       onClick={handleDownloadMonthReport}
                       className="w-full justify-start text-sm"
                     >
-                      📅 Download Month Report
+                      📅 Monthend Report
                     </Button>
                     <Button
                       variant="ghost"
@@ -592,7 +598,7 @@ const DataManagement = () => {
                       onClick={handleDownloadShortReport}
                       className="w-full justify-start text-sm"
                     >
-                      📝 Download Monthly Short Report
+                      📝 Monthly Short Report
                     </Button>
                   </div>
                 </div>

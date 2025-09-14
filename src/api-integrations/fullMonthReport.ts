@@ -1,7 +1,5 @@
-// src/api-integrations/fullMonthReport.ts
 // Calls the monthly report API and triggers file download
-
-export async function downloadFullMonthReport(reportMonth: string, includeInactiveUsers = true) {
+export async function downloadFullMonthReport(reportMonth: string, includeInactiveUsers = false) {
   const url = 'https://mentify.srv880406.hstgr.cloud/api/download-monthly-report';
   const body = {
     report_month: reportMonth,
