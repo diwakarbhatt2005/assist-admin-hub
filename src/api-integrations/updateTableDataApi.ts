@@ -39,9 +39,10 @@ export async function updateTableDataApi(
   const cleaned: any[] = [];
   const missingPkIndexes: number[] = [];
 
+
   updates.forEach((u, idx) => {
     if (!u || typeof u !== 'object') {
-      missingPkIndexes.push(idx);
+      // skip invalid update object, do not throw error
       return;
     }
 
@@ -50,7 +51,7 @@ export async function updateTableDataApi(
     if (pkValue === undefined) pkValue = u['primary_key_value'];
 
     if (pkValue === null || pkValue === undefined || pkValue === '') {
-      missingPkIndexes.push(idx);
+      // skip update if PK is missing/null/empty, do not throw error
       return;
     }
 
@@ -59,7 +60,12 @@ export async function updateTableDataApi(
     Object.keys(u).forEach((k) => {
       if (k === primaryKeyColumn || k === 'primary_key_value') return;
       const v = u[k];
-      if (v === null || v === undefined || v === '') return; // drop empty
+      if (v === null) {
+        // convert null to empty string
+        payload[k] = '';
+        return;
+      }
+      if (v === undefined || v === '') return; // drop undefined/empty string
       payload[k] = v;
     });
 
@@ -70,9 +76,7 @@ export async function updateTableDataApi(
     }
   });
 
-  if (missingPkIndexes.length > 0) {
-    throw { detail: `Each update must include a valid primary key value (column '${primaryKeyColumn}' or 'primary_key_value'). Missing at indexes: ${missingPkIndexes.join(', ')}` };
-  }
+  // Do not throw error for missing PK, just skip those updates
 
   const url = 'https://mentify.srv880406.hstgr.cloud/api/tables/update';
   const body = { table_name: tableName, primary_key_column: primaryKeyColumn, updates: cleaned };

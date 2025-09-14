@@ -193,9 +193,11 @@ const DataManagement = () => {
         ) {
           delete cleanRow[primaryKey];
         }
-        // Remove empty/null/undefined fields
+        // Convert null values to empty string, remove undefined
         Object.keys(cleanRow).forEach(key => {
-          if (cleanRow[key] === null || cleanRow[key] === undefined || cleanRow[key] === '') {
+          if (cleanRow[key] === null) {
+            cleanRow[key] = '';
+          } else if (cleanRow[key] === undefined || cleanRow[key] === '') {
             delete cleanRow[key];
           }
         });
