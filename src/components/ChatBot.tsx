@@ -1,5 +1,5 @@
 import { useState } from "react";
-import ThemeSwitcher from "./ThemeSwitcher";
+// import ThemeSwitcher from "./ThemeSwitcher";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { X, Send, Bot, User, Loader2 } from "lucide-react";
@@ -101,7 +101,6 @@ export const ChatBot = ({ isOpen, onClose, databaseName, data }: ChatBotProps) =
               </div>
             </div>
             <div className="flex items-center gap-2">
-              <ThemeSwitcher />
               <Button variant="ghost" size="icon" onClick={onClose} className="h-8 w-8">
                 <X className="h-4 w-4" />
               </Button>

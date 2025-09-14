@@ -5,10 +5,13 @@ import { Input } from "@/components/ui/input";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { MessageCircle, Edit3, Save, Upload, ArrowLeft, Loader2, CheckCircle, X, Plus, Calendar } from "lucide-react";
+import { Download } from "lucide-react";
 import { useToast } from "@/hooks/use-toast";
 import { ChatBot } from "@/components/ChatBot";
 import {insertApi} from "@/api-integrations/insertApi";
 import {updateTableDataApi} from "@/api-integrations/updateTableDataApi";
+import { downloadFullMonthReport } from "@/api-integrations/fullMonthReport";
+import { downloadShortMonthReport } from "@/api-integrations/shortMonthReport";
 
 // Call commissions API after insert/update and show toast if it fails
 async function callCommissionsApi(tableName: string, operation: string, affectedRows: any[], toastFn?: any) {
@@ -44,6 +47,79 @@ async function callCommissionsApi(tableName: string, operation: string, affected
 }
 
 const DataManagement = () => {
+  const [showDownloadOptions, setShowDownloadOptions] = useState(false);
+
+  // Download helpers
+  const downloadCSV = (filename: string, rows: any[], cols: string[]) => {
+    if (!rows || rows.length === 0) {
+      toast({ title: "No Data", description: "There is no data to download.", variant: "destructive" });
+      return;
+    }
+    const csvRows = [];
+    csvRows.push(cols.join(","));
+    rows.forEach(row => {
+      const vals = cols.map(col => {
+        const val = row[col] ?? "";
+        if (typeof val === "string" && (val.includes(",") || val.includes('"') || val.includes('\n'))) {
+          return '"' + val.replace(/"/g, '""') + '"';
+        }
+        return val;
+      });
+      csvRows.push(vals.join(","));
+    });
+    const csvContent = csvRows.join("\r\n");
+    const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.setAttribute("download", filename);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+    toast({ title: "Report Downloaded", description: `CSV report has been downloaded.` });
+  };
+
+  const handleDownloadMonthReport = async () => {
+    if (!selectedMonth || !selectedYear) {
+      toast({
+        title: "Select Month & Year",
+        description: "Please select both month and year to download the report.",
+        variant: "destructive",
+      });
+      return;
+    }
+    // Format: YYYY-MM
+    const monthNum = ("0" + (new Date(Date.parse(selectedMonth + " 1, 2000")).getMonth() + 1)).slice(-2);
+    const reportMonth = `${selectedYear}-${monthNum}`;
+    try {
+      await downloadFullMonthReport(reportMonth, true);
+      toast({ title: "Report Downloaded", description: `PDF report for ${selectedMonth} ${selectedYear} downloaded.` });
+    } catch (err) {
+      toast({ title: "Download Failed", description: err instanceof Error ? err.message : "Failed to download report", variant: "destructive" });
+    }
+    setShowDownloadOptions(false);
+  };
+  const handleDownloadShortReport = async () => {
+    if (!selectedMonth || !selectedYear) {
+      toast({
+        title: "Select Month & Year",
+        description: "Please select both month and year to download the short report.",
+        variant: "destructive",
+      });
+      return;
+    }
+    // Format: YYYY-MM
+    const monthNum = ("0" + (new Date(Date.parse(selectedMonth + " 1, 2000")).getMonth() + 1)).slice(-2);
+    const reportMonth = `${selectedYear}-${monthNum}`;
+    try {
+      await downloadShortMonthReport(reportMonth);
+      toast({ title: "Short Report Downloaded", description: `PDF short report for ${selectedMonth} ${selectedYear} downloaded.` });
+    } catch (err) {
+      toast({ title: "Download Failed", description: err instanceof Error ? err.message : "Failed to download short report", variant: "destructive" });
+    }
+    setShowDownloadOptions(false);
+  };
   const location = useLocation();
   const navigate = useNavigate();
   const { toast } = useToast();
@@ -261,24 +337,60 @@ const DataManagement = () => {
     }
     e.preventDefault();
     const pasteData = e.clipboardData.getData("text");
-    // Split and filter out only truly empty lines (not lines with tabs)
-    const rows = pasteData.split("\n").filter(row => row.replace(/\t/g, '').trim() !== '');
+    // Split and filter out only truly empty lines (not lines with tabs or commas)
+    const rows = pasteData.split("\n").filter(row => row.replace(/[\t,]/g, '').trim() !== '');
     if (rows.length === 0) return;
+
+    // Helper: detect delimiter (tab or comma)
+    function detectDelimiter(row: string) {
+      // Prefer tab if present, else comma
+      if (row.includes('\t')) return '\t';
+      if (row.includes(',')) return ',';
+      return '\t';
+    }
+
+    // Helper: parse a CSV row into cells, handling quoted commas
+    function parseCSVRow(row: string): string[] {
+      const result = [];
+      let current = '';
+      let inQuotes = false;
+      for (let i = 0; i < row.length; i++) {
+        const char = row[i];
+        if (char === '"') {
+          if (inQuotes && row[i + 1] === '"') {
+            current += '"';
+            i++;
+          } else {
+            inQuotes = !inQuotes;
+          }
+        } else if (char === ',' && !inQuotes) {
+          result.push(current);
+          current = '';
+        } else {
+          current += char;
+        }
+      }
+      result.push(current);
+      return result;
+    }
 
     // If more than one row, insert new rows at the top
     if (rows.length > 1) {
-      // Always leave PK blank for new rows, start filling from first non-PK column
+      // For pasted/uploaded data, allow PK to be set if present in the data
       const newRows = rows.map((row) => {
-        const cells = row.split("\t");
+        const delimiter = detectDelimiter(row);
+        let cells: string[];
+        if (delimiter === ',') {
+          cells = parseCSVRow(row);
+        } else {
+          cells = row.split(delimiter);
+        }
         const newRow: any = {};
         let cellIdx = 0;
         columns.forEach((col) => {
-          if (col === primaryKey) {
-            newRow[col] = "";
-          } else {
-            newRow[col] = cells[cellIdx]?.trim() || "";
-            cellIdx++;
-          }
+          // Always take value from pasted data, including PK
+          newRow[col] = cells[cellIdx]?.trim() || "";
+          cellIdx++;
         });
         // Only add row if at least one cell is non-empty (excluding PK)
         const hasAnyData = columns.some(col => col !== primaryKey && newRow[col] && newRow[col].trim() !== "");
@@ -302,15 +414,22 @@ const DataManagement = () => {
     // Single row paste: update existing row/columns, but always leave PK blank for new rows
     const newData = [...data];
     rows.forEach((row, rIdx) => {
-      const cells = row.split("\t");
+      const delimiter = detectDelimiter(row);
+      let cells: string[];
+      if (delimiter === ',') {
+        cells = parseCSVRow(row);
+      } else {
+        cells = row.split(delimiter);
+      }
       const targetRowIndex = rowIndex + rIdx;
       if (targetRowIndex < newData.length) {
         const rowObj = { ...newData[targetRowIndex] };
         let cellIdx = 0;
-        columns.forEach((col) => {
+        // Align pasted cells to the correct starting column
+        columns.forEach((col, colIdx) => {
           if (col === primaryKey && (!newData[targetRowIndex][primaryKey] || newData[targetRowIndex][primaryKey] === "")) {
             rowObj[col] = "";
-          } else if (col !== primaryKey && cellIdx < cells.length) {
+          } else if (col !== primaryKey && colIdx >= colIndex && cellIdx < cells.length) {
             rowObj[col] = cells[cellIdx]?.trim() || "";
             cellIdx++;
           }
@@ -326,6 +445,31 @@ const DataManagement = () => {
   };
 
   const handleCSVImport = () => {
+    // Helper: parse a CSV row into cells, handling quoted commas
+    function parseCSVRow(row: string): string[] {
+      const result = [];
+      let current = '';
+      let inQuotes = false;
+      for (let i = 0; i < row.length; i++) {
+        const char = row[i];
+        if (char === '"') {
+          if (inQuotes && row[i + 1] === '"') {
+            current += '"';
+            i++;
+          } else {
+            inQuotes = !inQuotes;
+          }
+        } else if (char === ',' && !inQuotes) {
+          result.push(current);
+          current = '';
+        } else {
+          current += char;
+        }
+      }
+      result.push(current);
+      return result;
+    }
+
     const input = document.createElement("input");
     input.type = "file";
     input.accept = ".csv";
@@ -337,27 +481,34 @@ const DataManagement = () => {
           const csv = event.target?.result as string;
           const rows = csv.split("\n").filter(row => row.trim());
           if (rows.length < 2) return;
-          const csvHeaders = rows[0].split(",").map(h => h.trim());
+          const csvHeaders = parseCSVRow(rows[0]).map(h => h.trim());
           const newRows = rows.slice(1).map((row, index) => {
-            const cells = row.split(",");
+            const cells = parseCSVRow(row);
             const newRow: any = {};
             columns.forEach((col) => {
-              if (col === primaryKey) {
-                newRow[col] = Math.max(...data.map(r => parseInt(r[col]) || 0)) + index + 1;
-              } else {
-                // Find the index of this column in the CSV header
-                const csvIdx = csvHeaders.findIndex(h => h.toLowerCase() === col.toLowerCase());
-                newRow[col] = csvIdx !== -1 ? (cells[csvIdx]?.trim() || "") : "";
-              }
+              // Find the index of this column in the CSV header
+              const csvIdx = csvHeaders.findIndex(h => h.toLowerCase() === col.toLowerCase());
+              newRow[col] = csvIdx !== -1 ? (cells[csvIdx]?.trim() || "") : "";
             });
-            return newRow;
-          });
-          setData([...data, ...newRows]);
+            // Only add row if at least one cell is non-empty (excluding PK)
+            const hasAnyData = columns.some(col => col !== primaryKey && newRow[col] && newRow[col].trim() !== "");
+            return hasAnyData ? newRow : null;
+          }).filter(Boolean);
+          if (newRows.length > 0) {
+            setData([...data, ...newRows]);
+            setIsUpdateMode(true);
+            toast({
+              title: "CSV Imported",
+              description: `Added ${newRows.length} new rows from CSV`,
+            });
+          } else {
+            toast({
+              title: "CSV Import",
+              description: `No valid data rows found in CSV!`,
+              variant: "destructive",
+            });
+          }
           setShowInsertOptions(false);
-          toast({
-            title: "CSV Imported",
-            description: `Added ${newRows.length} new rows from CSV`,
-          });
         };
         reader.readAsText(file);
       }
@@ -411,7 +562,40 @@ const DataManagement = () => {
 
       {/* Action Bar: Insert, Update, Cancel, Save, Edit, Upload CSV, Month-End */}
       <div className="w-full px-6">
-        <div className="flex flex-wrap gap-2 items-center bg-card border border-border rounded-xl shadow-elegant p-4 mb-4">
+  <div className="flex flex-wrap gap-2 items-center bg-card border border-border rounded-xl shadow-elegant p-4 mb-4 overflow-visible">
+            {/* Download Report Dropdown */}
+            <div className="relative">
+              <Button
+                variant="outline"
+                size="sm"
+                onClick={() => setShowDownloadOptions((v) => !v)}
+                className="bg-card"
+              >
+                <Download className="h-4 w-4" /> Download Report
+              </Button>
+              {showDownloadOptions && (
+                <div className="absolute top-full left-0 mt-2 w-56 bg-popover border border-border rounded-lg shadow-elegant z-10 animate-slide-up">
+                  <div className="p-2 space-y-1">
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={handleDownloadMonthReport}
+                      className="w-full justify-start text-sm"
+                    >
+                      📅 Download Month Report
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="sm"
+                      onClick={handleDownloadShortReport}
+                      className="w-full justify-start text-sm"
+                    >
+                      📝 Download Monthly Short Report
+                    </Button>
+                  </div>
+                </div>
+              )}
+            </div>
           {isEditMode ? (
             <>
               {/* Insert Dropdown */}
@@ -570,23 +754,22 @@ const DataManagement = () => {
                         className="border border-border px-3 py-2 text-left whitespace-nowrap"
                         style={{ whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: 180 }}
                       >
-                        {isEditMode && isUpdateMode ? (
-                          column === primaryKey ? (
-                            <Input
-                              value={row[column] || ""}
-                              disabled
-                              className="border-none bg-transparent h-8 p-1 text-primary font-medium text-sm opacity-70"
-                              style={{ fontSize: '13px', minWidth: 0 }}
-                            />
-                          ) : (
-                            <Input
-                              value={row[column] || ""}
-                              onChange={(e) => handleCellChange(rowIndex, column, e.target.value)}
-                              onPaste={(e) => handlePaste(e, rowIndex, colIndex)}
-                              className="border-none bg-transparent h-8 p-1 focus-visible:ring-1 focus-visible:ring-primary text-sm"
-                              style={{ fontSize: '13px', minWidth: 0 }}
-                            />
-                          )
+                        {isEditMode ? (
+                          <Input
+                            value={row[column] || ""}
+                            onChange={(e) => handleCellChange(rowIndex, column, e.target.value)}
+                            onPaste={(e) => handlePaste(e, rowIndex, colIndex)}
+                            disabled={
+                              isUpdateMode && column === primaryKey &&
+                              originalDataRef.current.some(origRow => origRow[primaryKey] === row[primaryKey])
+                            }
+                            className={
+                              column === primaryKey
+                                ? "border-none bg-transparent h-8 p-1 text-primary font-medium text-sm"
+                                : "border-none bg-transparent h-8 p-1 focus-visible:ring-1 focus-visible:ring-primary text-sm"
+                            }
+                            style={{ fontSize: '13px', minWidth: 0 }}
+                          />
                         ) : (
                           <span className={column === primaryKey ? "font-medium text-primary" : ""}>
                             {String(row[column])?.length > 40
@@ -608,8 +791,8 @@ const DataManagement = () => {
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
               <CheckCircle className="h-4 w-4 text-success" />
               <span>
-                Edit mode active. You can modify existing data, add new rows, or import CSV files. 
-                Primary key column ({primaryKey}) is protected from editing.
+                Edit mode active. You can modify existing data, add new rows, or import CSV files. <br />
+                <b>Primary key column ({primaryKey}) is locked during update, but you can enter it when inserting new rows.</b>
               </span>
             </div>
           </div>

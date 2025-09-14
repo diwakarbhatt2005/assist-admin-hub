@@ -22,23 +22,28 @@ export async function insertApi(tableName: string, data: any[], primaryKey: stri
     });
     return cleanRow;
   });
+  const payload = {
+    table_name: tableName,
+    data: cleaned,
+  };
+  console.log('[insertApi] Sending payload:', payload);
   const response = await fetch('https://mentify.srv880406.hstgr.cloud/api/tables/insert', {
     method: 'POST',
     headers: {
       'accept': 'application/json',
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({
-      table_name: tableName,
-      data: cleaned,
-    }),
+    body: JSON.stringify(payload),
   });
   if (!response.ok) {
     let errorMsg = 'Failed to insert data';
     try {
       const err = await response.json();
+      console.error('[insertApi] Error response:', err);
       if (err.detail) errorMsg = err.detail;
-    } catch {}
+    } catch (e) {
+      console.error('[insertApi] Error parsing error response:', e);
+    }
     throw new Error(errorMsg);
   }
   return response.json();
