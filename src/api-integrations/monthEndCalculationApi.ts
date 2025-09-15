@@ -9,7 +9,7 @@ export interface MonthEndCalcResponse {
 
 export async function monthEndCalculationApi(calculationMonth: string, forceRecalculate = false): Promise<MonthEndCalcResponse> {
   if (!calculationMonth) throw new Error('calculationMonth is required');
-  const response = await fetch('https://mentify.srv880406.hstgr.cloud/api/monthendcalapi', {
+  const response = await fetch('https://mentify.srv880406.hstgr.cloud/api/monthly-calculations', {
     method: 'POST',
     headers: {
       'accept': 'application/json',

@@ -12,6 +12,7 @@ import {insertApi} from "@/api-integrations/insertApi";
 import {updateTableDataApi} from "@/api-integrations/updateTableDataApi";
 import { downloadFullMonthReport } from "@/api-integrations/fullMonthReport";
 import { downloadShortMonthReport } from "@/api-integrations/shortMonthReport";
+import { monthEndCalculationApi } from "@/api-integrations/monthEndCalculationApi";
 
 // Call commissions API after insert/update and show toast if it fails
 async function callCommissionsApi(tableName: string, operation: string, affectedRows: any[], toastFn?: any) {
@@ -533,24 +534,38 @@ const DataManagement = () => {
       });
       return;
     }
+    // Format month: YYYY-MM
+    const monthNum = ("0" + (new Date(Date.parse(selectedMonth + " 1, 2000")).getMonth() + 1)).slice(-2);
+    const calculationMonth = `${selectedYear}-${monthNum}`;
 
     setIsCalculating(true);
+    toast({ title: "Calculation Started", description: `Running month-end calculation for ${selectedMonth} ${selectedYear}...` });
     try {
-      // Simulate month-end calculation API call
-      await new Promise((resolve) => setTimeout(resolve, 3000));
-      
-      toast({
-        title: "Calculation Complete",
-        description: `Month-end calculation for ${selectedMonth} ${selectedYear} has been completed successfully.`,
-      });
+      const res = await monthEndCalculationApi(calculationMonth, false);
+      console.log('[monthEndCalculationApi] response:', res);
+      if (res && (res as any).success) {
+        toast({
+          title: "Calculation Complete",
+          description: res.message || `Month-end calculation for ${selectedMonth} ${selectedYear} completed successfully.`,
+        });
+      } else {
+        toast({
+          title: "Calculation Failed",
+          description: (res && (res as any).message) || 'Month-end calculation reported failure.',
+          variant: 'destructive',
+        });
+        console.error('[monthEndCalculationApi] failed response:', res);
+      }
     } catch (error) {
       toast({
         title: "Calculation Failed",
-        description: "Failed to complete month-end calculation. Please try again.",
+        description: error instanceof Error ? error.message : "Failed to complete month-end calculation. Please try again.",
         variant: "destructive",
       });
+      console.error('Month-end calculation error:', error);
+    } finally {
+      setIsCalculating(false);
     }
-    setIsCalculating(false);
   };
 
   // Removed leftover Month-End Calculation section code
