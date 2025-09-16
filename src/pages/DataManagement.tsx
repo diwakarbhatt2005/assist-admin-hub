@@ -206,27 +206,41 @@ const DataManagement = () => {
   const handleUpdate = async () => {
     setSaving(true);
     try {
+      // Snapshot for debugging: capture full data and originalDataRef to detect where fields are lost
+      try {
+        console.log('[handleUpdate] START - data snapshot:', JSON.parse(JSON.stringify(data)));
+        console.log('[handleUpdate] START - originalDataRef snapshot:', JSON.parse(JSON.stringify(originalDataRef.current)));
+      } catch (e) {
+        console.warn('[handleUpdate] Could not stringify snapshots for logging', e);
+      }
       // Find new rows (not present in originalDataRef)
       const orig = originalDataRef.current;
       const origPKs = new Set(orig.map(row => row[primaryKey]));
       let newRows = data.filter(row => !origPKs.has(row[primaryKey]));
-      // Clean new rows: remove PK if blank/null/undefined so backend can auto-generate
+      // Clean new rows safely: build a fresh object per row, don't mutate originals.
+      // Omit primary key if blank so backend can auto-generate. Omit null/undefined/empty (unless valid falsy like 0/false).
       newRows = newRows.map(row => {
-        const cleanRow = { ...row };
-        if (
-          cleanRow[primaryKey] === undefined ||
-          cleanRow[primaryKey] === null ||
-          cleanRow[primaryKey] === ''
-        ) {
-          delete cleanRow[primaryKey];
-        }
-        // Convert null values to empty string, remove undefined
-        Object.keys(cleanRow).forEach(key => {
-          if (cleanRow[key] === null) {
-            cleanRow[key] = '';
-          } else if (cleanRow[key] === undefined || cleanRow[key] === '') {
-            delete cleanRow[key];
+        const cleanRow: any = {};
+        Object.keys(row).forEach(key => {
+          const val = row[key];
+          // Handle PK: omit if blank/null/undefined
+          if (key === primaryKey) {
+            if (val === undefined || val === null || (typeof val === 'string' && val.trim() === '')) {
+              return; // omit PK
+            }
+            cleanRow[key] = val;
+            return;
           }
+          // For other keys: omit undefined/null/empty-string (after trim). Preserve 0 and false.
+          if (val === undefined || val === null) return;
+          if (typeof val === 'string') {
+            const t = val.trim();
+            if (t === '') return;
+            cleanRow[key] = t;
+            return;
+          }
+          // numbers/booleans
+          cleanRow[key] = val;
         });
         return cleanRow;
       });
@@ -260,17 +274,104 @@ const DataManagement = () => {
           variant: "destructive",
         });
       }
-      if (newRows.length > 0) {
-        console.log('[handleUpdate] newRows to insert:', newRows);
-        const insertRes = await insertApi(tableName, newRows, primaryKey);
-        console.log('[handleUpdate] insertApi response:', insertRes);
-        toast({
-          title: "Rows Inserted",
-          description: `${newRows.length} new row(s) inserted successfully!`,
-          variant: "default",
+      // Client-side validation: check for duplicate unique fields to prevent server 500/duplicate-key errors
+      function findDuplicateConflicts(existing: any[], incoming: any[], uniqueCols: string[]) {
+        const conflicts: {col: string, value: string, countExisting: number, countIncoming: number}[] = [];
+        uniqueCols.forEach(col => {
+          const existingVals = new Map<string, number>();
+          existing.forEach(r => {
+            if (r && r[col]) {
+              const v = String(r[col]);
+              existingVals.set(v, (existingVals.get(v) || 0) + 1);
+            }
+          });
+          const incomingVals = new Map<string, number>();
+          incoming.forEach(r => {
+            if (r && r[col]) {
+              const v = String(r[col]);
+              incomingVals.set(v, (incomingVals.get(v) || 0) + 1);
+            }
+          });
+          // detect values already in existing data
+          for (const [val, cnt] of incomingVals.entries()) {
+            if (existingVals.has(val)) {
+              conflicts.push({ col, value: val, countExisting: existingVals.get(val) || 0, countIncoming: cnt });
+            }
+            // detect duplicates within incoming
+            if (cnt > 1) {
+              conflicts.push({ col, value: val, countExisting: existingVals.get(val) || 0, countIncoming: cnt });
+            }
+          }
         });
-        // Call commissions API after insert
-        await callCommissionsApi(tableName, 'insert', newRows, toast);
+        return conflicts;
+      }
+
+      if (newRows.length > 0) {
+        // check against currently loaded data for duplicates in common unique columns
+        const uniqueCols = ['email', 'username', 'wallet_address_usdt'];
+        const conflicts = findDuplicateConflicts(originalDataRef.current || [], newRows, uniqueCols);
+        if (conflicts.length > 0) {
+          const msgs = conflicts.map(c => `${c.col}='${c.value}' (${c.countIncoming} new${c.countExisting ? `, exists ${c.countExisting}` : ''})`);
+          toast({ title: 'Duplicate/Conflict in CSV', description: `Found ${conflicts.length} conflict(s): ${msgs.join('; ')}`, variant: 'destructive' });
+          // Abort insert so user can fix CSV
+          setSaving(false);
+          return;
+        }
+        console.log('[handleUpdate] newRows to insert:', newRows);
+        // Attempt insert, but handle duplicate-key errors by removing conflicting rows and retrying
+        let rowsToInsert = [...newRows];
+        let attempts = 0;
+        const maxAttempts = 5;
+        let insertedCount = 0;
+        while (rowsToInsert.length > 0 && attempts < maxAttempts) {
+          attempts++;
+          try {
+            // Deep-clone rowsToInsert to ensure we are not passing references that may be mutated elsewhere
+            const safeRows = JSON.parse(JSON.stringify(rowsToInsert));
+            console.log('[handleUpdate] rowsToInsert (safe clone):', safeRows);
+            const insertRes = await insertApi(tableName, safeRows, primaryKey);
+            console.log('[handleUpdate] insertApi response:', insertRes);
+            insertedCount += rowsToInsert.length;
+            // Call commissions API after insert
+            await callCommissionsApi(tableName, 'insert', rowsToInsert, toast);
+            rowsToInsert = [];
+            break;
+          } catch (err) {
+            console.error('[handleUpdate] insertApi error:', err);
+            const msg = err instanceof Error ? err.message : String(err);
+            // Try to parse duplicate key error like: Key (email)=(admin@mentify.ai) already exists.
+            const dupRegex = /Key \(([^)]+)\)=\(([^)]+)\).*already exists/i;
+            const m = dupRegex.exec(msg);
+            if (m) {
+              const dupCol = m[1];
+              const dupVal = m[2];
+              const before = rowsToInsert.length;
+              rowsToInsert = rowsToInsert.filter(r => String(r[dupCol]) !== dupVal);
+              const removed = before - rowsToInsert.length;
+              toast({
+                title: "Skipped Duplicate Rows",
+                description: `${removed} row(s) skipped due to duplicate ${dupCol} = ${dupVal}`,
+                variant: 'destructive',
+              });
+              // If we've removed duplicates, loop will retry remaining rows
+              continue;
+            }
+            // If not a duplicate error we can't recover client-side
+            toast({ title: 'Insert Failed', description: msg || 'Failed to insert data', variant: 'destructive' });
+            // stop retrying
+            break;
+          }
+        }
+        if (insertedCount > 0) {
+          toast({
+            title: "Rows Inserted",
+            description: `${insertedCount} new row(s) inserted successfully!`,
+            variant: "default",
+          });
+        }
+        if (rowsToInsert.length > 0) {
+          console.warn('[handleUpdate] some rows could not be inserted after retries:', rowsToInsert);
+        }
       }
       if (updates.length > 0) {
         await updateTableDataApi(tableName, primaryKey, updates);
@@ -362,7 +463,9 @@ const DataManagement = () => {
   const handlePaste = (e: React.ClipboardEvent, rowIndex: number, colIndex: number) => {
     // If pasting at the top and the first row is blank, remove it (for add row + paste flow)
     let workingData = data;
-    if (rowIndex === 0 && data.length > 0 && columns.every(col => !data[0][col])) {
+    if (rowIndex === 0 && data.length > 0 && columns.every(col => (
+      data[0][col] == null || (typeof data[0][col] === 'string' && data[0][col].trim() === '')
+    ))) {
       workingData = data.slice(1);
       (window as any)._skipNextAddRow = true;
     }
@@ -408,7 +511,7 @@ const DataManagement = () => {
     // If more than one row, insert new rows at the top
     if (rows.length > 1) {
       // For pasted/uploaded data, allow PK to be set if present in the data
-      const newRows = rows.map((row) => {
+        const newRows = rows.map((row) => {
         const delimiter = detectDelimiter(row);
         let cells: string[];
         if (delimiter === ',') {
@@ -420,11 +523,20 @@ const DataManagement = () => {
         let cellIdx = 0;
         columns.forEach((col) => {
           // Always take value from pasted data, including PK
-          newRow[col] = cells[cellIdx]?.trim() || "";
+          const raw = cells[cellIdx];
+          const trimmed = raw !== undefined && raw !== null ? String(raw).trim() : "";
+          newRow[col] = trimmed.toLowerCase() === 'null' ? null : trimmed;
           cellIdx++;
         });
         // Only add row if at least one cell is non-empty (excluding PK)
-        const hasAnyData = columns.some(col => col !== primaryKey && newRow[col] && newRow[col].trim() !== "");
+        const hasAnyData = columns.some(col => {
+          if (col === primaryKey) return false;
+          const v = newRow[col];
+          if (v === null) return true; // explicit NULL counts as intentional data
+          if (typeof v === 'string' && v.trim() !== '') return true;
+          if (typeof v === 'number' || typeof v === 'boolean') return true;
+          return false;
+        });
         return hasAnyData ? newRow : null;
       }).filter(Boolean);
       let finalData = [...newRows, ...workingData];
@@ -442,7 +554,7 @@ const DataManagement = () => {
       return;
     }
 
-    // Single row paste: update existing row/columns, but always leave PK blank for new rows
+  // Single row paste: update existing row/columns, but always leave PK blank for new rows
     const newData = [...data];
     rows.forEach((row, rIdx) => {
       const delimiter = detectDelimiter(row);
@@ -458,10 +570,15 @@ const DataManagement = () => {
         let cellIdx = 0;
         // Align pasted cells to the correct starting column
         columns.forEach((col, colIdx) => {
-          if (col === primaryKey && (!newData[targetRowIndex][primaryKey] || newData[targetRowIndex][primaryKey] === "")) {
-            rowObj[col] = "";
-          } else if (col !== primaryKey && colIdx >= colIndex && cellIdx < cells.length) {
-            rowObj[col] = cells[cellIdx]?.trim() || "";
+          if (col === primaryKey) {
+            const existingPk = newData[targetRowIndex][primaryKey];
+            if (existingPk == null || (typeof existingPk === 'string' && existingPk.trim() === '')) {
+              rowObj[col] = "";
+            }
+          } else if (colIdx >= colIndex && cellIdx < cells.length) {
+            const raw = cells[cellIdx];
+            const trimmed = raw !== undefined && raw !== null ? String(raw).trim() : "";
+            rowObj[col] = trimmed.toLowerCase() === 'null' ? null : trimmed;
             cellIdx++;
           }
         });
@@ -802,7 +919,7 @@ const DataManagement = () => {
                       >
                         {isEditMode ? (
                           <Input
-                            value={row[column] || ""}
+                            value={row[column] ?? ""}
                             onChange={(e) => handleCellChange(rowIndex, column, e.target.value)}
                             onPaste={(e) => handlePaste(e, rowIndex, colIndex)}
                             disabled={

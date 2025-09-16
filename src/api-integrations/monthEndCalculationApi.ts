@@ -17,7 +17,7 @@ export async function monthEndCalculationApi(calculationMonth: string, forceReca
     },
     body: JSON.stringify({
       calculation_month: calculationMonth,
-      force_recalculate: forceRecalculate,
+      force_recalculate: true,
     }),
   });
   const resData = await response.json();

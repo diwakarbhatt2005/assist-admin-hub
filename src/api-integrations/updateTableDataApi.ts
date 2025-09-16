@@ -60,12 +60,8 @@ export async function updateTableDataApi(
     Object.keys(u).forEach((k) => {
       if (k === primaryKeyColumn || k === 'primary_key_value') return;
       const v = u[k];
-      if (v === null) {
-        // convert null to empty string
-        payload[k] = '';
-        return;
-      }
-      if (v === undefined || v === '') return; // drop undefined/empty string
+      // Skip null/undefined/empty values: do not send them as updates
+      if (v === null || v === undefined || v === '') return;
       payload[k] = v;
     });
 
