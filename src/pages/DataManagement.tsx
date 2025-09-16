@@ -13,6 +13,7 @@ import {updateTableDataApi} from "@/api-integrations/updateTableDataApi";
 import { downloadFullMonthReport } from "@/api-integrations/fullMonthReport";
 import { downloadShortMonthReport } from "@/api-integrations/shortMonthReport";
 import { monthEndCalculationApi } from "@/api-integrations/monthEndCalculationApi";
+import { fetchTableSchema } from "@/api-integrations/fetchTableSchema";
 
 // Call commissions API after insert/update and show toast if it fails
 async function callCommissionsApi(tableName: string, operation: string, affectedRows: any[], toastFn?: any) {
@@ -155,13 +156,32 @@ const DataManagement = () => {
     }
 
     const { data: receivedData, databaseName: tblName } = location.state;
-  setData(receivedData);
-  originalDataRef.current = receivedData;
+  setData(receivedData || []);
+  originalDataRef.current = receivedData || [];
     setTableName(tblName);
-    if (receivedData.length > 0) {
+    if (receivedData && receivedData.length > 0) {
       const cols = Object.keys(receivedData[0]);
       setColumns(cols);
       setPrimaryKey(cols[0]); // First column is primary key
+    } else {
+      // If table is empty, fetch schema to show columns and primary key so CSV uploads can map correctly
+      (async () => {
+        try {
+          const schema = await fetchTableSchema(tblName);
+          if (schema && Array.isArray(schema.columns) && schema.columns.length > 0) {
+            const cols = schema.columns.map(c => c.column_name);
+            setColumns(cols);
+            // Prefer provided primary_keys, else fall back to first column
+            if (Array.isArray(schema.primary_keys) && schema.primary_keys.length > 0) {
+              setPrimaryKey(schema.primary_keys[0]);
+            } else {
+              setPrimaryKey(cols[0]);
+            }
+          }
+        } catch (err) {
+          console.error('Failed to fetch table schema for empty table:', tblName, err);
+        }
+      })();
     }
   }, [location.state, navigate]);
 
@@ -241,7 +261,9 @@ const DataManagement = () => {
         });
       }
       if (newRows.length > 0) {
-        await insertApi(tableName, newRows, primaryKey);
+        console.log('[handleUpdate] newRows to insert:', newRows);
+        const insertRes = await insertApi(tableName, newRows, primaryKey);
+        console.log('[handleUpdate] insertApi response:', insertRes);
         toast({
           title: "Rows Inserted",
           description: `${newRows.length} new row(s) inserted successfully!`,
@@ -504,6 +526,7 @@ const DataManagement = () => {
             return hasAnyData ? newRow : null;
           }).filter(Boolean);
           if (newRows.length > 0) {
+                console.log('[handleCSVImport] parsed newRows:', newRows);
             setData([...data, ...newRows]);
             setIsUpdateMode(true);
             toast({
