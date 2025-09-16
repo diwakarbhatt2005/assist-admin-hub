@@ -104,6 +104,26 @@ export async function insertApi(tableName: string, data: any[], primaryKey: stri
     return cleanRow;
   });
 
+  // Ensure each cleaned row has explicit keys for columns that exist in the schema
+  // (or that appeared in the original CSV). Some backends expect a consistent
+  // column set per row; omitting keys can lead to surprising behavior where a
+  // single missing value affects column handling for the entire batch. We add
+  // explicit null for missing cells so only that cell is null.
+  try {
+    const colsList = allowedCols && allowedCols.length ? allowedCols : Array.from(origCols);
+    cleaned.forEach(r => {
+      colsList.forEach(col => {
+        if (col === primaryKey) return; // keep primaryKey omission behavior
+        if (!(col in r)) {
+          // mark missing cell explicitly as null so the backend treats it per-row
+          r[col] = null;
+        }
+      });
+    });
+  } catch (e) {
+    /* ignore - best-effort padding of rows */
+  }
+
   // Diagnostic: compare columns seen in originals vs those present in cleaned rows
   try {
     const missingCols = [] as string[];
